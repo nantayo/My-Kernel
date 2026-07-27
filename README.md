@@ -1,0 +1,1 @@
+flippy[上游内核源码](https://github.com/unifreq/linux-6.12.y/commits/main/) | ophub[上游内核config](https://github.com/ophub/kernel/commits/main/kernel-config/release/stable/config-6.12)
