@@ -1,0 +1,43 @@
+name: Build Linux-6.12.y Kernel for Amlogic
+
+on:
+  workflow_dispatch:
+
+env:
+  GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+  TZ: Asia/Shanghai
+
+jobs:
+  build:
+    runs-on: ubuntu-26.04-arm
+
+    steps:
+    - name: Checkout
+      uses: actions/checkout@main
+
+    - name: Initialize environment
+      env:
+        DEBIAN_FRONTEND: noninteractive
+      run: |
+        sudo -E apt-get -qq update > /dev/null
+        sudo -E apt-get -qq install -y $(curl -fsSL https://ophub.org/ubuntu2604-build-armbian-depends) > /dev/null
+        sudo systemctl daemon-reload
+        sudo -E apt-get -qq autoremove --purge > /dev/null
+        sudo -E apt-get -qq clean > /dev/null
+        sudo timedatectl set-timezone "$TZ"
+
+    - name: Compile Kernel
+      uses: ophub/amlogic-s9xxx-armbian@main
+      with:
+        build_target: kernel
+        kernel_version: 6.12.y
+        kernel_sign: -nantayo
+        kernel_config: kernel-config
+        kernel_patch: kernel-patch
+        auto_patch: true
+
+    - name: Upload Kernel to release
+      uses: softprops/action-gh-release@master
+      with:
+        tag_name: kernel_stable
+        files: ${{ env.PACKAGED_OUTPUTPATH }}/6.12*.tar.gz
