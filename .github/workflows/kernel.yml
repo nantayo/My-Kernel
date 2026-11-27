@@ -1,0 +1,64 @@
+name: Build flippy kernel for meson-gxl
+
+on:
+  workflow_dispatch:
+
+env:
+  GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04-arm
+    strategy:
+      fail-fast: false
+      matrix:
+        kernel_version: [6.18.y, 6.12.y]
+    name: kernel-${{ matrix.kernel_version }}
+
+    steps:
+      - uses: actions/checkout@main
+
+      - name: Generate kernel config
+        run: |
+          v="${{ matrix.kernel_version }}"; v="${v%.y}"
+          mkdir -p kernel-config
+          awk '/^[A-Za-z0-9_]+$/ {printf "s|^CONFIG_%s=.*|# CONFIG_%s is not set|\n", $1, $1}' "trim/$v.list" | sed -f - "baseline/config-$v" > "kernel-config/config-$v"
+          sed -i 's|^CONFIG_EXTRA_FIRMWARE=.*|CONFIG_EXTRA_FIRMWARE="rtl_nic/rtl8156b-2.fw"|' "kernel-config/config-$v"
+          echo 'CONFIG_EXTRA_FIRMWARE_DIR="/opt/kernel/compile-kernel/tools/config"' >> "kernel-config/config-$v"
+
+      - name: Compile kernel
+        uses: ophub/amlogic-s9xxx-armbian@main
+        with:
+          build_target: kernel
+          kernel_version: ${{ matrix.kernel_version }}
+          kernel_sign: -nantayo
+          kernel_config: kernel-config
+          docker_image: ophub/armbian-trixie:arm64
+
+      - name: Slim kernel bundle
+        if: ${{ env.PACKAGED_STATUS == 'success' && !cancelled() }}
+        run: |
+          set -e
+          cd "$PACKAGED_OUTPUTPATH"
+          bundle="$PACKAGED_OUTPUTTAGS.tar.gz"
+          sudo chown -R "$(id -u):$(id -g)" .
+          work="$(mktemp -d)"; tar -xzf "$bundle" -C "$work"
+          cd "$work/$PACKAGED_OUTPUTTAGS"
+          for b in boot-*.tar.gz; do
+            tar -tzf "$b" | grep -q '^initrd\.img-' || { echo "::error::$b 无 initrd.img-*，上游打包结构变了？"; exit 1; }
+            gunzip -c "$b" > /tmp/boot.tar
+            for f in $(tar -tf /tmp/boot.tar | grep '^initrd\.img-'); do tar --delete -f /tmp/boot.tar "$f"; done
+            gzip -9n -c /tmp/boot.tar > "$b"; echo "slimmed $b"
+          done
+          rm -v header-*.tar.gz || { echo "::error::缺 header-*.tar.gz，上游打包结构变了？"; exit 1; }
+          sha256sum --text *.tar.gz > sha256sums
+          cd "$work"; tar -czf "$PACKAGED_OUTPUTPATH/$bundle" "$PACKAGED_OUTPUTTAGS"
+          cd "$PACKAGED_OUTPUTPATH"; rm -rf "$work"
+          echo "packaged: $(stat -c %s "$bundle") bytes"
+
+      - name: Upload kernel to release
+        if: ${{ env.PACKAGED_STATUS == 'success' && !cancelled() }}
+        run: |
+          tag="kernel_flippy"
+          gh release create "$tag" --repo ${{ github.repository }} --title "$tag" --notes "" 2>/dev/null || true
+          gh release upload "$tag" "${PACKAGED_OUTPUTPATH}/${PACKAGED_OUTPUTTAGS}.tar.gz" --repo ${{ github.repository }} --clobber
